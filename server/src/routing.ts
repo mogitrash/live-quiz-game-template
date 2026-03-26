@@ -1,24 +1,14 @@
 import { WebSocket } from 'ws';
 import { RegData, User, WSMessage } from './types';
 import { getState } from './state';
-
-export const registerUser = (regData: RegData, ws: WebSocket) => {
-  const newUser: User = {
-    name: regData.name,
-    password: regData.password,
-    index: crypto.randomUUID(),
-    ws,
-  };
-
-  getState().users.set(newUser.name, newUser);
-};
+import { auth } from './commands/auth';
 
 export const route = (ws: WebSocket, message: WSMessage) => {
+  const { data } = message;
+
   switch (message.type) {
     case 'reg':
-      const { data } = message;
-
-      registerUser(data, ws);
+      auth(data, ws);
       break;
     case 'create_game':
       break;

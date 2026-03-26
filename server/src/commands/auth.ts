@@ -2,11 +2,11 @@ import { RegData, User } from '../types';
 import { getState } from '../state';
 import { WebSocket } from 'ws';
 
-export const auth = (regData: RegData, ws: WebSocket) => {
+export const auth = (data: RegData, ws: WebSocket) => {
   const state = getState();
 
-  if (state.users.has(regData.name)) {
-    const user = state.users.get(regData.name)!;
+  if (state.users.has(ws)) {
+    const user = state.users.get(ws)!;
     ws.send(
       JSON.stringify({
         type: 'reg',
@@ -22,13 +22,13 @@ export const auth = (regData: RegData, ws: WebSocket) => {
   }
 
   const newUser: User = {
-    name: regData.name,
-    password: regData.password,
+    name: data.name,
+    password: data.password,
     index: crypto.randomUUID(),
     ws,
   };
 
-  getState().users.set(newUser.name, newUser);
+  getState().users.set(ws, newUser);
 
   ws.send(
     JSON.stringify({

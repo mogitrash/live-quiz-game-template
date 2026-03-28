@@ -1,8 +1,9 @@
 import { WebSocket } from "ws";
 import { RegData, User, WSMessage } from "./types";
-import { getState } from "./state";
+
 import { auth } from "./commands/auth";
 import { createGame, joinGame } from "./commands/game-management";
+import { answerQuestion, startGame } from "./commands/game-play";
 
 export const route = (ws: WebSocket, message: WSMessage) => {
   const { data } = message;
@@ -18,6 +19,10 @@ export const route = (ws: WebSocket, message: WSMessage) => {
       joinGame(data, ws);
       break;
     case "start_game":
+      startGame(data, ws);
+      break;
+    case "answer":
+      answerQuestion(data, ws);
       break;
   }
 };

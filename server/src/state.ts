@@ -1,5 +1,5 @@
-import { Game, User } from './types';
-import { WebSocket } from 'ws';
+import { Game, User } from "./types";
+import { WebSocket } from "ws";
 
 const state: State = {
   users: new Map(),

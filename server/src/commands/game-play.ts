@@ -2,13 +2,29 @@ import { getState } from "../state";
 import { AnswerData, Game, StartGameData, WSMessage } from "../types";
 import { WebSocket } from "ws";
 
+const broadcastToGamePlayers = (game: Game, message: WSMessage) => {
+  const state = getState();
+  const payload = JSON.stringify(message);
+  const playerIndices = new Set(game.players.map((p) => p.index));
+
+  state.users.forEach((user) => {
+    if (!user.ws) {
+      return;
+    }
+    if (user.index === game.hostId || playerIndices.has(user.index)) {
+      user.ws.send(payload);
+    }
+  });
+};
+
+const BASE_POINTS = 1000;
+
 const incrementQuestion = (game: Game) => {
   game.currentQuestion++;
   sendCurrentQuestion(game);
 };
 
 const sendQuestionBroadcast = (game: Game) => {
-  const state = getState();
   const currentQuestion = game.questions[game.currentQuestion];
   const questionBroadcast: WSMessage = {
     type: "question_result",
@@ -28,12 +44,18 @@ const sendQuestionBroadcast = (game: Game) => {
           };
         }
 
-        const timeRemaining = Math.floor((Date.now() - answer.timestamp) / 1000);
+        const elapsedSec = Math.floor(
+          (answer.timestamp - (game.questionStartTime ?? answer.timestamp)) / 1000,
+        );
+        const timeRemaining = Math.max(0, currentQuestion.timeLimitSec - elapsedSec);
 
-        const pointsEarned = calcQuestionPoints(timeRemaining, currentQuestion.timeLimitSec);
+        const correct = answer.answerIndex === currentQuestion.correctIndex;
+        const pointsEarned = correct
+          ? calcQuestionPoints(timeRemaining, currentQuestion.timeLimitSec)
+          : 0;
 
+        player.answeredCorrectly = correct;
         player.score += pointsEarned;
-        player.answeredCorrectly = answer.answerIndex === currentQuestion.correctIndex;
         return {
           name: player.name,
           answered: player.hasAnswered,
@@ -46,44 +68,92 @@ const sendQuestionBroadcast = (game: Game) => {
     id: 0,
   };
 
-  state.users.forEach((user) => {
-    if (user.ws) {
-      user.ws.send(JSON.stringify(questionBroadcast));
+  broadcastToGamePlayers(game, questionBroadcast);
+
+  setTimeout(() => {
+    if (game.currentQuestion === game.questions.length - 1) {
+      sendGameFinishedBroadcast(game);
+    } else {
+      incrementQuestion(game);
+      sendCurrentQuestion(game);
     }
-  });
+  }, 5000);
 };
 
 const sendCurrentQuestion = (game: Game) => {
-  const state = getState();
+  game.playerAnswers = new Map();
+  game.questionStartTime = Date.now();
 
   const currentQuestion = game.questions[game.currentQuestion];
   const questionBroadcast: WSMessage = {
     type: "question",
-    data: currentQuestion,
+    data: {
+      questionNumber: game.currentQuestion + 1,
+      totalQuestions: game.questions.length,
+      text: currentQuestion.text,
+      options: currentQuestion.options,
+      timeLimitSec: currentQuestion.timeLimitSec,
+    },
     id: 0,
   };
 
-  state.users.forEach((user) => {
-    if (user.ws) {
-      user.ws.send(JSON.stringify(questionBroadcast));
-    }
-  });
+  broadcastToGamePlayers(game, questionBroadcast);
 
   game.questionTimer = setTimeout(() => {
     sendQuestionBroadcast(game);
   }, currentQuestion.timeLimitSec * 1000);
 };
 
-const calcQuestionPoints = (timeRemaining: number, timeLimit: number) => {
-  return 10 * (timeRemaining / timeLimit);
+const calcQuestionPoints = (timeRemainingSec: number, timeLimitSec: number) => {
+  if (timeLimitSec <= 0) {
+    return 0;
+  }
+  return Math.min(BASE_POINTS, Math.floor(BASE_POINTS * (timeRemainingSec / timeLimitSec)));
+};
+
+const sendGameFinishedBroadcast = (game: Game) => {
+  const sortedPlayers = game.players.sort((a, b) => b.score - a.score);
+
+  const gameFinishedBroadcast: WSMessage = {
+    type: "game_finished",
+    data: {
+      scoreboard: sortedPlayers.map((player, index) => ({
+        name: player.name,
+        score: player.score,
+        rank: index + 1,
+      })),
+    },
+    id: 0,
+  };
+  game.status = "finished";
+
+  broadcastToGamePlayers(game, gameFinishedBroadcast);
 };
 
 export const startGame = (startGameData: StartGameData, ws: WebSocket) => {
   const state = getState();
 
-  const game = state.games.get(startGameData.gameId);
+  const user = state.users.get(ws);
+  if (!user) {
+    return;
+  }
+
+  const gameId = typeof startGameData?.gameId === "string" ? startGameData.gameId.trim() : "";
+  if (!gameId) {
+    return;
+  }
+
+  const game = state.games.get(gameId);
 
   if (!game) {
+    return;
+  }
+
+  if (game.hostId !== user.index) {
+    return;
+  }
+
+  if (game.status !== "waiting" || game.questions.length === 0) {
     return;
   }
 
@@ -94,16 +164,47 @@ export const startGame = (startGameData: StartGameData, ws: WebSocket) => {
 
 export const answerQuestion = (answerData: AnswerData, ws: WebSocket) => {
   const state = getState();
-  const game = state.games.get(answerData.gameId);
   const user = state.users.get(ws);
 
-  if (!game || !user || game.status !== "in_progress") {
+  if (!user) {
     return;
   }
 
-  const player = game.players.find((player) => player.index === user.index);
+  const gameId = typeof answerData?.gameId === "string" ? answerData.gameId.trim() : "";
+  if (!gameId) {
+    return;
+  }
+
+  const game = state.games.get(gameId);
+
+  if (!game || game.status !== "in_progress") {
+    return;
+  }
+
+  const player = game.players.find((p) => p.index === user.index);
 
   if (!player) {
+    return;
+  }
+
+  const qIndex = answerData?.questionIndex;
+  if (typeof qIndex !== "number" || !Number.isInteger(qIndex) || qIndex !== game.currentQuestion) {
+    return;
+  }
+
+  const currentQuestion = game.questions[game.currentQuestion];
+  if (!currentQuestion) {
+    return;
+  }
+
+  const answerIndex = answerData?.answerIndex;
+  const optionCount = currentQuestion.options.length;
+  if (
+    typeof answerIndex !== "number" ||
+    !Number.isInteger(answerIndex) ||
+    answerIndex < 0 ||
+    answerIndex >= optionCount
+  ) {
     return;
   }
 
@@ -124,4 +225,9 @@ export const answerQuestion = (answerData: AnswerData, ws: WebSocket) => {
   };
 
   ws.send(JSON.stringify(response));
+
+  if (game.playerAnswers.size === game.players.length) {
+    clearTimeout(game.questionTimer);
+    sendQuestionBroadcast(game);
+  }
 };

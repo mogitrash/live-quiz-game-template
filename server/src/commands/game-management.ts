@@ -1,10 +1,11 @@
 import { getState } from "../state";
 import { CreateGameData, Game, JoinGameData, WSMessage } from "../types";
-import ws, { WebSocket } from "ws";
+import { WebSocket } from "ws";
+import { isQuestionsValid } from "../utils";
 
 const ROOM_CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
-const updatePlayers = (game: Game, ws: WebSocket) => {
+export const updatePlayers = (game: Game) => {
   const state = getState();
 
   const response: WSMessage = {
@@ -13,8 +14,11 @@ const updatePlayers = (game: Game, ws: WebSocket) => {
     id: 0,
   };
 
+  const playerIndexSet = new Set(game.players.map((p) => p.index));
+
   state.users.forEach((user) => {
-    if (user.ws && user.ws !== ws) {
+    const inLobby = user.index === game.hostId || playerIndexSet.has(user.index);
+    if (inLobby && user.ws) {
       user.ws.send(JSON.stringify(response));
     }
   });
@@ -39,11 +43,16 @@ export const createGame = (data: CreateGameData, ws: WebSocket) => {
     return;
   }
 
+  const questions = data?.questions;
+  if (!isQuestionsValid(questions)) {
+    return;
+  }
+
   const newGame: Game = {
     id: crypto.randomUUID(),
     hostId: user.index,
     code: generateRoomCode(),
-    questions: data.questions,
+    questions,
     players: [],
     currentQuestion: 0,
     status: "waiting",
@@ -73,41 +82,45 @@ export const joinGame = (data: JoinGameData, ws: WebSocket) => {
     return;
   }
 
-  getState().games.forEach((game) => {
-    if (game.code === data.code) {
-      game.players.push({
-        name: user.name,
-        index: user.index,
-        score: 0,
-      });
+  const code = typeof data?.code === "string" ? data.code.trim().toUpperCase() : "";
 
-      const personalRes: WSMessage = {
-        type: "game_joined",
-        data: {
-          gameId: game.id,
-        },
-        id: 0,
-      };
-
-      ws.send(JSON.stringify(personalRes));
-
-      const broadcastRes: WSMessage = {
-        type: "player_joined",
-        data: {
-          playerName: user.name,
-          playerCount: game.players.length,
-        },
-        id: 0,
-      };
-
-      state.users.forEach((user) => {
-        if (user.ws && user.ws !== ws) {
-          user.ws.send(JSON.stringify(broadcastRes));
-          updatePlayers(game, user.ws);
-        }
-      });
-
-      updatePlayers(game, ws);
+  for (const game of state.games.values()) {
+    if (game.code !== code) {
+      continue;
     }
-  });
+
+    game.players.push({
+      name: user.name,
+      index: user.index,
+      score: 0,
+    });
+
+    const personalRes: WSMessage = {
+      type: "game_joined",
+      data: {
+        gameId: game.id,
+      },
+      id: 0,
+    };
+
+    ws.send(JSON.stringify(personalRes));
+
+    const broadcastRes: WSMessage = {
+      type: "player_joined",
+      data: {
+        playerName: user.name,
+        playerCount: game.players.length,
+      },
+      id: 0,
+    };
+
+    state.users.forEach((u) => {
+      if (u.ws && u.ws !== ws) {
+        u.ws.send(JSON.stringify(broadcastRes));
+      }
+    });
+
+    updatePlayers(game);
+    return;
+  }
 };

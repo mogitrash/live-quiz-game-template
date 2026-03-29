@@ -1,5 +1,5 @@
 import { WebSocket } from "ws";
-import { RegData, User, WSMessage } from "./types";
+import { WSMessage } from "./types";
 
 import { auth } from "./commands/auth";
 import { createGame, joinGame } from "./commands/game-management";
